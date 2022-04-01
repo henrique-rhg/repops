@@ -1,0 +1,209 @@
+#!/usr/bin/sh
+# 
+# @author Ricardo Gonçalves <https://github.com/henrique-rhg/repops>
+# 
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+NAME=`basename $0 | sed "s/\.sh$//"`
+DIRBIN=`cd $(dirname $0); pwd`
+DIRLIB="$(dirname $DIRBIN)/lib/repops"
+USERNAME=`id | sed "s/^uid=[0-9]*(//; s/).*//"`
+OPTION=${1:-}
+VERSION=0.1.0
+
+if [ "$USERNAME" = "root" ]; then
+  printf "This program cannot be run as '%s'!\n" "$USERNAME" >&2
+  exit 1
+fi
+
+if [ ! -d "$DIRLIB" ]; then
+  printf "Could not find directory '%s'!\n" "$DIRLIB" >&2
+  exit 1
+fi
+
+. "$DIRLIB/git"
+
+fn_agent_open()
+{
+  # $1 [<server>]
+  # $2 [<key>]
+  _server="$1"
+  _key="$2"
+  _host=$(echo "$_server" | sed 's/^[^@]*@//')
+
+  if [ ! -f "$_key" ]; then
+    printf "The key '%s' provided cannot be found!\n" "$_key" >&2
+    
+    return 127
+  fi
+
+  if [ ! -f "~/.ssh/known_hosts" ]; then
+    touch ~/.ssh/known_hosts
+  fi
+
+  ssh-keygen -R "$_host" > /dev/null 2>&1
+  eval `ssh-agent -s` > /dev/null 2>&1
+  ssh-add "$_key" > /dev/null 2>&1
+  _exitcode=$(ssh-keyscan -t ecdsa-sha2-nistp256 -H "$_host" >> ~/.ssh/known_hosts && echo 0 || echo $?)
+
+  if [ "$_exitcode" -ne "0" ]; then
+    printf "Could not connect to '%s'!\n" "$_host" >&2
+  fi
+
+  return $_exitcode
+}
+
+fn_agent_close() 
+{
+  ssh-add -D > /dev/null 2>&1
+  ssh-agent -k > /dev/null 2>&1
+}
+
+fn_deploy() 
+{
+  # $1 [<server>]
+  # $2 [<key>]
+  # $3 [<target>]
+  # $4 [<extra>]
+  # $5 [<umask>]
+  _server="$1"
+  _key="$2"
+  _target="$3"
+  _extra="$4"
+  _umask="$5"
+
+  fn_agent_open "$_server" "$_key"
+  _exitcode="$?"
+  
+  if [ "$_exitcode" -eq "0" ]; then
+    git_scatter "$_server" "$_extra" "$_target" "$_umask"
+    _exitcode="$?"
+  fi
+
+  fn_agent_close
+
+  return $_exitcode
+}
+
+fn_remove() 
+{
+  # $1 [<server>]
+  # $2 [<key>]
+  # $3 [<target>]
+  # $4 [<extra>]
+  _server="$1"
+  _key="$2"
+  _target="$3"
+  _extra="$4"
+
+  fn_agent_open "$_server" "$_key"
+  _exitcode="$?"
+
+  if [ "$_exitcode" -eq "0" ]; then
+    git_remove "$_server" "$_extra" "$_target"
+    _exitcode="$?"
+  fi
+
+  fn_agent_close
+
+  return $_exitcode
+}
+
+fn_help()
+{
+  echo "Usage: $NAME [action] [options]"
+  echo "  $NAME --help"
+  echo "  $NAME --deploy [options]"
+  echo "  $NAME --remove [options]"
+  echo ""
+  echo "Actions [action]:"
+  echo "  --help            Print this help."
+  echo "  --deploy          Deploy the branch to a specific server."
+  echo "  --remove          Undeploy the branch to a specific server."
+  echo ""
+  echo "Options [options]:"
+  echo "  --server=<value>  Address of connection with the server containing the usename."
+  echo "  --key=<value>     Server authorization key."
+  echo "  --target=<value>  Server deployment path."
+  echo "  --extra=<value>   Name of the branch to be extracted."
+  echo "  --umask=<value>   Umask."
+  echo ""
+}
+
+main() 
+{
+  _option="$1"
+  _server=""
+  _key=""
+  _target=""
+  _extra=""
+  _umask=""
+
+  shift 1
+
+  for _offset in "$@"; do
+    _value=$(echo $_offset | sed 's/^[^=]*=//')
+
+    case "$_offset" in
+      --server=*)
+        _server="$_value"
+        ;;
+      --key=*)
+        _key="$_value"
+        ;;
+      --target=*)
+        _target="$_value"
+        ;;
+      --extra=*)
+        _extra="$_value"
+        ;;
+      --umask=*)
+        _umask="$_value"
+        ;;
+    esac
+  done
+
+  case "$_option" in
+    --deploy)
+      if [ -z "$_server" -o -z "$_key" -o -z "$_extra" ]; then
+        echo "The parameters were insufficient to carry out the eviction!" >&2
+        exit 63
+      fi
+      
+      fn_deploy $_server $_key $_target $_extra $_umask >&2
+      exit $?
+      ;;
+    --remove)
+      if [ -z "$_server" -o -z "$_key" -o -z "$_extra" ]; then
+        echo "The parameters were insufficient to start the process!" >&2
+        exit 127
+      fi 
+      
+      fn_remove $_server $_key $_target $_extra >&2
+      exit $?
+      ;;
+    --help)
+      fn_help
+      ;;
+    --version)
+      printf "%s version %s\n" "$NAME" "$VERSION" >&1
+      ;;
+    *)
+      printf "%s: option requires a valid argument!\nTry '%s --help' for more information.\n" "$NAME" "$NAME" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --deploy --server=git-remote@example.com --key=./local/keys/git-remote --target="~/test/" --extra=master --umask=0002
+# --remove --server=git-remote@example.com --key=./local/keys/git-remote --target="~/test/" --extra=master
+
+if [ $# != 0 ]; then
+  shift 1
+fi
+
+main "$OPTION" $@
+
+exit 0
+
+# vim:set ai et sts=2 sw=2 tw=0:

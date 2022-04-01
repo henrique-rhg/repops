@@ -1,0 +1,214 @@
+# @author Ricardo Gonçalves <https://github.com/henrique-rhg>
+# @syntax sh
+# 
+
+git_export()
+{
+  # $1 [<extra>]
+  # $2 [<output>]
+  # $3 [<format>]
+  _extra="$1"
+  _output="$2"
+  _format="$3"
+
+  if [ -z "$_format" ]; then
+    _format="tar"
+  fi
+
+  if [ -f "$_temp" ]; then
+    printf "The output file '%s' already exists!\n" "$_output" >&2 
+
+    return 1
+  fi
+
+  git archive --format=$_format $_extra -o $_output
+  _exitcode="$?"
+
+  if [ "$_exitcode" -ne "0" ]; then
+    rm $_output > /dev/null 2>&1
+    printf "There was an error exporting '%s'!\n" "$_extra" >&2
+
+    return $_exitcode
+  fi
+
+  echo $_output
+
+  return 0
+}
+
+# git@127.0.0.1 master ~/master
+git_scatter()
+{
+  # $1 [<server>]
+  # $2 [<extra>]
+  # $3 [<target>]
+  # $4 [<umask>]
+  _server="$1"
+  _extra="$2"
+  _target="$3"
+  _umask="$4"
+  _output="$(mktemp -u | sed 's/\./-/').tar"
+  _name=`echo "$_output" | sed 's/^\///' | sed 's/[^\/]*\///g'`
+
+  if [ -z "$_target" ]; then
+    _target="~/"
+  fi
+
+  if [ -z "$_umask" ]; then
+    _umask="0002"
+  fi
+
+  _tempfile="$_target$(echo $_output | sed -n 's/.*\/\([^\/]*\)$/\1/p')"
+  _target="$_target$_extra/"
+  _target_temp=$(echo "$_target" | sed -n 's/\/\([^\/]*\/$\)/\/.\1/p')
+
+  echo "Preparing transfer..."
+
+  git_export $_extra $_output "tar" > /dev/null
+  _exitcode="$?"
+  
+  if [ "$_exitcode" -eq "0" ]; then
+    printf "Transferring '%s' file...\n" "$_output"
+    scp "$_output" "$_server:$_tempfile" > /dev/null 2>&1
+    _exitcode="$?"
+    rm -f "$_output" > /dev/null 2>&1
+  fi
+
+  if [ "$_exitcode" -ne "0" ]; then
+    printf "There was an error transferring '%s'!\n" "$_output" >&2
+    
+    return $_exitcode
+  fi
+  
+  ssh -T "$_server" /usr/bin/sh << EOF
+#!/usr/bin/sh
+# 
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+NAME=`echo $_extra`
+L_DIR=`echo $_target`
+L_DIR_TEMP=`echo $_target_temp`
+L_ARCH=`echo $_tempfile`
+
+umask $_umask
+
+if [ -d "\$L_DIR" ]; then
+  echo "Deploying files..."
+
+  tar -xf \$L_ARCH -C \$L_DIR > /dev/null 2>&1
+  _exitcode="\$?"
+else 
+  echo "Preparing structure..."
+
+  mkdir -p \$L_DIR_TEMP
+  _exitcode="\$?"
+
+  if [ "\$_exitcode" -eq "0" ]; then
+    mkdir -p \$L_DIR
+    _exitcode="\$?"
+  fi
+
+  if [ "\$_exitcode" -ne "0" ]; then
+    printf "Could not create directory '%s'!\n" "\$L_DIR" >&2
+  fi
+
+  echo "Deploying files..."
+
+  if [ "\$_exitcode" -eq "0" ]; then
+    tar -xf \$L_ARCH -C \$L_DIR_TEMP > /dev/null 2>&1
+    _exitcode="\$?"
+  fi
+
+  if [ "\$_exitcode" -eq "0" ]; then
+    mv -f \$L_DIR_TEMP.* \$L_DIR > /dev/null 2>&1
+    mv -f \$L_DIR_TEMP* \$L_DIR > /dev/null 2>&1
+    _exitcode="\$?"
+  fi
+
+  if [ -d "\$L_DIR_TEMP" ]; then
+    rm -Rf \$L_DIR_TEMP > /dev/null 2>&1
+  fi
+fi
+
+rm -f \$L_ARCH > /dev/null 2>&1
+
+if [ "\$_exitcode" -eq "0" ]; then
+  if [ -x \$L_DIR.job ]; then
+    printf "Running the command '%s'...\n" ".job \$NAME"
+    \$L_DIR.job "\$NAME"
+    _exitcode="\$?"
+
+    if [ "\$_exitcode" -ne "0" ]; then
+      printf "The command '%s' was not successfully executed!\n" ".job \$NAME" >&2
+    fi
+  fi 
+
+  echo "Successful!"
+else 
+  echo "Error!" >&2
+fi
+
+
+EOF
+
+  _exitcode="$?"
+
+  return $_exitcode
+}
+
+git_remove()
+{
+  # $1 [<server>]
+  # $2 [<extra>]
+  # $3 [<target>]
+  _server="$1"
+  _extra="$2"
+  _target="$3"
+
+  if [ -z "$_target" ]; then
+    _target="~/"
+  fi
+
+
+  _target_base="$_target$(echo "$_extra" | sed -n 's/\([^\/]*\)\/*.*$/\1/p')/"
+  _target="$_target$_extra/"
+  _target_temp=$(echo "$_target" | sed -n 's/\/\([^\/]*\/$\)/\/.\1/p')
+
+  ssh -T "$_server" /usr/bin/sh << EOF
+#!/usr/bin/sh
+# 
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+NAME=`echo $_extra`
+L_DIR=`echo $_target`
+L_DIR_BASE=`echo $_target_base`
+L_DIR_TEMP=`echo $_target_temp`
+L_ARCH=`echo $_tempfile`
+
+umask $_umask
+
+printf "Removing the '%s' directory...\n" "\$L_DIR"
+
+if [ -d "\$L_DIR_TEMP" ]; then
+  rm -Rf \$L_DIR_TEMP > /dev/null 2>&1
+fi
+
+rm -Rf \$L_DIR > /dev/null 2>&1
+_exitcode="\$?"
+
+if [ "$_exitcode" -eq "0" ]; then
+  rmdir \$L_DIR_BASE > /dev/null 2>&1
+  echo "Successful!"
+else 
+  echo "Error!" >&2
+fi
+
+
+EOF
+
+  _exitcode="$?"
+  
+  return $_exitcode
+}
+
+# vim:set ai et sts=2 sw=2 tw=0:

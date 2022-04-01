@@ -1,0 +1,131 @@
+#!/usr/bin/sh
+# 
+# @author Ricardo Gonçalves <https://github.com/henrique-rhg/repops>
+# 
+# <https://git-scm.com/docs/git-bundle/>
+#
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+NAME=`basename $0 | sed "s/\.sh$//"`
+SOURCE=""
+DESTINY=""
+
+fn_repository()
+{
+  # $1 [<dir>]
+  # $2 [<lavel>]
+  _dir="$1"
+  _lavel="$2"
+
+  if [ -z "$_lavel" ]; then
+    _lavel="0"
+  fi
+
+  if [ "$_lavel" -gt "3" ]; then
+    echo ""
+  fi
+
+  cache=""
+
+  for item in $_dir/*; do
+    case "$item" in
+      *.git)
+        cache="$cache $item"
+        ;;
+      *)
+        cache="$cache $(fn_repository "$item" $_lavel)"
+        ;;
+    esac
+  done
+
+  echo $cache
+}
+
+fn_bundle()
+{
+  # $1 [<repo>]
+  # $2 [<target>]
+  _repo="$1"
+  _target="$2"
+	_reponame=`basename $_repo`
+
+  cd "$_target"
+  git clone --bare "$_repo" > /dev/null 2>&1
+  cd "$_reponame"
+
+  pwd
+  echo "$_target/$_reponame.bundle"
+  git bundle create "$_target/$_reponame.bundle" --all
+}
+
+fn_generate_backup()
+{
+  # $1 [<source>]
+  # $2 [<destiny>]
+  _source="$1"
+  _destiny="$2"
+  _archive="bundle-all-$(date +%y%m%d%H%M).tar.gz"
+
+  if [ ! -d "$_source" ]; then
+    return 1
+  fi
+
+  if [ -d "$_destiny" ]; then
+    rm -Rf "$_destiny"
+  fi
+
+  mkdir -p "$_destiny"
+
+  for _repo in `fn_repository $_source`; do
+    fn_bundle "$_repo" "$_destiny"
+  done
+
+  cd "$_destiny"
+  tar -zcf "$_archive" *.bundle
+  rm *.bundle
+  rm *.git
+}
+
+fn_help()
+{
+  echo "Usage: $NAME [action] [options]"
+  echo "  $NAME --help"
+  echo "  $NAME [options]"
+  echo ""
+  echo "Actions [action]:"
+  echo "  --help            Print this help."
+  echo ""
+  echo "Options [options]:"
+  echo "  --source=<value>  Source directory of the repositories."
+  echo "  --destiny=<value> Directory to direct the backup to."
+  echo ""
+
+  exit 0
+}
+
+for _offset in "$@"; do
+  _value=$(echo $_offset | sed 's/^[^=]*=//')
+
+  case "$_offset" in
+    --source=*)
+      SOURCE="$_value"
+      ;;
+    --destiny=*)
+      DESTINY="$_value"
+      ;;
+    --help)
+      fn_help
+      ;;
+  esac
+done
+
+if [ -z "$SOURCE" -o -z "$DESTINY" ]; then
+  echo "The arguments provided were not enough!" >&2
+  exit 1
+fi
+
+fn_generate_backup "$SOURCE" "$DESTINY"
+
+exit 0
+
+# vim:set ai et sts=2 sw=2 tw=0:
